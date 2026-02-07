@@ -1,0 +1,93 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #0a0a0a;
+  --foreground: #ededed;
+  --accent: #6366f1;
+  --sidebar: #111111;
+  --border: #1f1f1f;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+}
+
+/* Obsidian-like markdown styling */
+.prose {
+  @apply text-gray-200;
+}
+
+.prose h1 {
+  @apply text-2xl font-bold text-white mb-4 pb-2 border-b border-gray-800;
+}
+
+.prose h2 {
+  @apply text-xl font-semibold text-white mt-6 mb-3;
+}
+
+.prose h3 {
+  @apply text-lg font-medium text-gray-100 mt-4 mb-2;
+}
+
+.prose p {
+  @apply mb-4 leading-relaxed;
+}
+
+.prose ul {
+  @apply list-disc list-inside mb-4 space-y-1;
+}
+
+.prose ol {
+  @apply list-decimal list-inside mb-4 space-y-1;
+}
+
+.prose li {
+  @apply text-gray-300;
+}
+
+.prose code {
+  @apply bg-gray-800 px-1.5 py-0.5 rounded text-sm text-indigo-300;
+}
+
+.prose pre {
+  @apply bg-gray-900 p-4 rounded-lg overflow-x-auto mb-4;
+}
+
+.prose blockquote {
+  @apply border-l-4 border-indigo-500 pl-4 italic text-gray-400 my-4;
+}
+
+.prose a {
+  @apply text-indigo-400 hover:text-indigo-300 underline;
+}
+
+/* Linear-like sidebar */
+.sidebar-item {
+  @apply px-3 py-2 rounded-md hover:bg-gray-800 cursor-pointer transition-colors;
+}
+
+.sidebar-item.active {
+  @apply bg-indigo-500/20 text-indigo-300;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #333;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #444;
+}
