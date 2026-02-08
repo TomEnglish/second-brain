@@ -1,52 +1,55 @@
 import { NextRequest, NextResponse } from "next/server";
-import fs from "fs/promises";
-import path from "path";
+import { supabase } from "@/lib/supabase";
 
 export async function GET(
   request: NextRequest,
   { params }: { params: { slug: string } }
 ) {
   try {
-    const brainDir = path.join(process.cwd(), "..", "brain", "books", params.slug);
-    
-    // Get book structure
-    const bibleContent = await fs.readFile(
-      path.join(brainDir, "BOOK_BIBLE.md"),
-      "utf-8"
-    ).catch(() => "");
+    // Get book
+    const { data: book, error: bookError } = await supabase
+      .from('books')
+      .select('*')
+      .eq('slug', params.slug)
+      .single();
+
+    if (bookError) throw bookError;
 
     // Get chapters
-    const chaptersDir = path.join(brainDir, "chapters");
-    let chapters: string[] = [];
-    try {
-      const files = await fs.readdir(chaptersDir);
-      chapters = files.filter(f => f.endsWith(".md")).sort();
-    } catch {}
+    const { data: chapters, error: chaptersError } = await supabase
+      .from('chapters')
+      .select('*')
+      .eq('book_id', book.id)
+      .order('order_num');
+
+    if (chaptersError) throw chaptersError;
 
     // Get outlines
-    const outlinesDir = path.join(brainDir, "outlines");
-    let outlines: string[] = [];
-    try {
-      const files = await fs.readdir(outlinesDir);
-      outlines = files.filter(f => f.endsWith(".md")).sort();
-    } catch {}
+    const { data: outlines, error: outlinesError } = await supabase
+      .from('outlines')
+      .select('*')
+      .eq('book_id', book.id)
+      .order('created_at');
+
+    if (outlinesError) throw outlinesError;
 
     // Get research notes
-    const researchDir = path.join(brainDir, "research");
-    let researchNotes: string[] = [];
-    try {
-      const files = await fs.readdir(researchDir);
-      researchNotes = files.filter(f => f.endsWith(".md")).sort();
-    } catch {}
+    const { data: researchNotes, error: researchError } = await supabase
+      .from('research_notes')
+      .select('*')
+      .eq('book_id', book.id)
+      .order('created_at');
+
+    if (researchError) throw researchError;
 
     return NextResponse.json({
-      slug: params.slug,
-      title: params.slug.replace(/-/g, " ").replace(/\b\w/g, l => l.toUpperCase()),
-      status: "intake",
-      bibleContent,
-      chapters,
-      outlines,
-      researchNotes,
+      slug: book.slug,
+      title: book.title,
+      status: book.status,
+      bibleContent: book.bible_content,
+      chapters: chapters.map(c => c.title),
+      outlines: outlines.map(o => o.version),
+      researchNotes: researchNotes.map(r => r.title),
     });
   } catch (error: any) {
     console.error("Error loading book:", error);

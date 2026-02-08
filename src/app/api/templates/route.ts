@@ -1,64 +1,73 @@
 import { NextRequest, NextResponse } from "next/server";
-import fs from "fs";
-import path from "path";
+import { supabase } from "@/lib/supabase";
 import matter from "gray-matter";
 
-const BRAIN_DIR = process.env.BRAIN_DIR || path.join(process.cwd(), "..", "brain");
-const TEMPLATES_DIR = path.join(BRAIN_DIR, "templates");
+// GET - List all templates
+export async function GET() {
+  try {
+    const { data: templates, error } = await supabase
+      .from('templates')
+      .select('*')
+      .order('name');
 
-interface TemplateVariable {
-  name: string;
-  label: string;
-  placeholder?: string;
-}
+    if (error) throw error;
 
-interface Template {
-  slug: string;
-  name: string;
-  description: string;
-  icon: string;
-  category: string;
-  variables: TemplateVariable[];
-  content: string;
-}
-
-// Ensure templates directory exists
-if (!fs.existsSync(TEMPLATES_DIR)) {
-  fs.mkdirSync(TEMPLATES_DIR, { recursive: true });
-}
-
-function getTemplates(): Template[] {
-  const templates: Template[] = [];
-
-  if (!fs.existsSync(TEMPLATES_DIR)) {
-    return templates;
+    return NextResponse.json(templates);
+  } catch (error: any) {
+    console.error("Error reading templates:", error);
+    return NextResponse.json(
+      { error: "Failed to read templates" },
+      { status: 500 }
+    );
   }
+}
 
-  const files = fs.readdirSync(TEMPLATES_DIR).filter((f) => f.endsWith(".md"));
+// POST - Apply a template (returns processed content)
+export async function POST(request: NextRequest) {
+  try {
+    const { slug, variables = {} } = await request.json();
 
-  for (const file of files) {
-    const filePath = path.join(TEMPLATES_DIR, file);
-    const fileContent = fs.readFileSync(filePath, "utf-8");
+    if (!slug || typeof slug !== "string") {
+      return NextResponse.json(
+        { error: "Template slug is required" },
+        { status: 400 }
+      );
+    }
+
+    const { data: template, error } = await supabase
+      .from('templates')
+      .select('*')
+      .eq('slug', slug)
+      .single();
+
+    if (error || !template) {
+      return NextResponse.json(
+        { error: "Template not found" },
+        { status: 404 }
+      );
+    }
+
+    // Process the template content with variables
+    const processedContent = processTemplate(template.content, variables);
     
-    const { data: frontmatter, content } = matter(fileContent);
-    
-    const slug = file.replace(/\.md$/, "");
-    
-    templates.push({
-      slug,
-      name: frontmatter.name || slug,
-      description: frontmatter.description || "",
-      icon: frontmatter.icon || "📄",
-      category: frontmatter.category || "concepts",
-      variables: Array.isArray(frontmatter.variables) ? frontmatter.variables : [],
-      content: content.trim(),
+    // Extract title from processed content (first H1)
+    const titleMatch = processedContent.match(/^#\s+(.+)$/m);
+    const title = titleMatch ? titleMatch[1] : template.name;
+
+    return NextResponse.json({
+      title,
+      content: processedContent,
+      category: template.category,
     });
+  } catch (error: any) {
+    console.error("Error applying template:", error);
+    return NextResponse.json(
+      { error: "Failed to apply template" },
+      { status: 500 }
+    );
   }
-
-  return templates.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-// Process template variables and replace placeholders
 function processTemplate(content: string, variables: Record<string, string>): string {
   let processed = content;
   
@@ -85,61 +94,4 @@ function processTemplate(content: string, variables: Record<string, string>): st
   }
   
   return processed;
-}
-
-// GET - List all templates
-export async function GET() {
-  try {
-    const templates = getTemplates();
-    return NextResponse.json(templates);
-  } catch (error) {
-    console.error("Error reading templates:", error);
-    return NextResponse.json(
-      { error: "Failed to read templates" },
-      { status: 500 }
-    );
-  }
-}
-
-// POST - Apply a template (returns processed content)
-export async function POST(request: NextRequest) {
-  try {
-    const { slug, variables = {} } = await request.json();
-
-    if (!slug || typeof slug !== "string") {
-      return NextResponse.json(
-        { error: "Template slug is required" },
-        { status: 400 }
-      );
-    }
-
-    const templates = getTemplates();
-    const template = templates.find((t) => t.slug === slug);
-
-    if (!template) {
-      return NextResponse.json(
-        { error: "Template not found" },
-        { status: 404 }
-      );
-    }
-
-    // Process the template content with variables
-    const processedContent = processTemplate(template.content, variables);
-    
-    // Extract title from processed content (first H1)
-    const titleMatch = processedContent.match(/^#\s+(.+)$/m);
-    const title = titleMatch ? titleMatch[1] : template.name;
-
-    return NextResponse.json({
-      title,
-      content: processedContent,
-      category: template.category,
-    });
-  } catch (error) {
-    console.error("Error applying template:", error);
-    return NextResponse.json(
-      { error: "Failed to apply template" },
-      { status: 500 }
-    );
-  }
 }

@@ -1,263 +1,120 @@
 import { NextRequest, NextResponse } from "next/server";
-import fs from "fs";
-import path from "path";
+import { supabase } from "@/lib/supabase";
 import matter from "gray-matter";
 
-const BRAIN_DIR = process.env.BRAIN_DIR || path.join(process.cwd(), "..", "brain");
-
-// Ensure brain directories exist
-const CATEGORIES = ["journals", "concepts", "projects", "research"];
-for (const cat of CATEGORIES) {
-  const catPath = path.join(BRAIN_DIR, cat);
-  if (!fs.existsSync(catPath)) {
-    fs.mkdirSync(catPath, { recursive: true });
-  }
-}
-
-interface Document {
-  slug: string;
-  title: string;
-  category: string;
-  date?: string;
-  content: string;
-  tags: string[];
-}
-
-function extractTags(content: string): string[] {
-  // Match #tags (but not ## headers or #123 numbers)
-  const tagRegex = /(?:^|\s)#([a-zA-Z][a-zA-Z0-9_-]*)/g;
-  const tags: string[] = [];
-  let match;
-  
-  while ((match = tagRegex.exec(content)) !== null) {
-    const tag = match[1].toLowerCase();
-    if (!tags.includes(tag)) {
-      tags.push(tag);
-    }
-  }
-  
-  return tags.sort();
-}
-
-function extractTitle(content: string, filename: string): string {
-  // Try to get title from first H1
-  const h1Match = content.match(/^#\s+(.+)$/m);
-  if (h1Match) {
-    return h1Match[1];
-  }
-  
-  // Fall back to filename
-  return filename
-    .replace(/\.md$/, "")
-    .replace(/^\d{4}-\d{2}-\d{2}-?/, "") // Remove date prefix
-    .replace(/-/g, " ")
-    .replace(/\b\w/g, (c) => c.toUpperCase()); // Title case
-}
-
-function extractDate(filename: string): string | undefined {
-  const dateMatch = filename.match(/^(\d{4}-\d{2}-\d{2})/);
-  return dateMatch ? dateMatch[1] : undefined;
-}
-
-function getDocuments(): Document[] {
-  const documents: Document[] = [];
-  const categories = ["journals", "concepts", "projects", "research"];
-
-  for (const category of categories) {
-    const categoryPath = path.join(BRAIN_DIR, category);
-    
-    if (!fs.existsSync(categoryPath)) {
-      continue;
-    }
-
-    const files = fs.readdirSync(categoryPath).filter((f) => f.endsWith(".md"));
-
-    for (const file of files) {
-      const filePath = path.join(categoryPath, file);
-      const fileContent = fs.readFileSync(filePath, "utf-8");
-      
-      // Parse frontmatter if present
-      const { data: frontmatter, content } = matter(fileContent);
-      
-      const slug = `${category}/${file.replace(/\.md$/, "")}`;
-      const title = frontmatter.title || extractTitle(content, file);
-      const date = frontmatter.date || extractDate(file);
-
-      // Extract tags from frontmatter and content
-      const frontmatterTags = Array.isArray(frontmatter.tags) 
-        ? frontmatter.tags.map((t: string) => t.toLowerCase())
-        : [];
-      const contentTags = extractTags(content);
-      const combinedTags = [...frontmatterTags, ...contentTags];
-      const allTags = Array.from(new Set(combinedTags)).sort();
-
-      documents.push({
-        slug,
-        title,
-        category,
-        date,
-        content,
-        tags: allTags,
-      });
-    }
-  }
-
-  return documents;
-}
-
-export async function GET() {
+// GET - List all documents
+export async function GET(request: NextRequest) {
   try {
-    const documents = getDocuments();
-    return NextResponse.json(documents);
-  } catch (error) {
-    console.error("Error reading documents:", error);
+    const { data: documents, error } = await supabase
+      .from('documents')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+
+    // Transform to match existing interface
+    const formatted = documents.map(doc => ({
+      slug: doc.slug,
+      title: doc.title,
+      category: doc.category,
+      content: doc.content,
+      tags: doc.tags || [],
+      date: doc.created_at.split('T')[0], // YYYY-MM-DD
+    }));
+
+    return NextResponse.json(formatted);
+  } catch (error: any) {
+    console.error("Error fetching documents:", error);
     return NextResponse.json(
-      { error: "Failed to read documents" },
+      { error: error.message || "Failed to fetch documents" },
       { status: 500 }
     );
   }
 }
 
-function slugify(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[^\w\s-]/g, "") // Remove special chars
-    .replace(/\s+/g, "-") // Spaces to hyphens
-    .replace(/-+/g, "-") // Collapse multiple hyphens
-    .trim();
-}
-
-function getTodayDate(): string {
-  return new Date().toISOString().split("T")[0];
-}
-
+// POST - Create new document
 export async function POST(request: NextRequest) {
   try {
     const { title, content, category } = await request.json();
 
-    // Validate
-    if (!title || typeof title !== "string") {
+    if (!title || !content || !category) {
       return NextResponse.json(
-        { error: "Title is required" },
+        { error: "Title, content, and category are required" },
         { status: 400 }
       );
     }
 
-    if (!CATEGORIES.includes(category)) {
-      return NextResponse.json(
-        { error: "Invalid category" },
-        { status: 400 }
-      );
-    }
+    // Generate slug from title
+    const slug = `${category}/${title
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "")}`;
 
-    const today = getTodayDate();
-    const slug = slugify(title);
-    
-    // Generate filename - for journals, use date prefix
-    let filename: string;
-    if (category === "journals") {
-      filename = `${today}.md`;
-    } else if (category === "research") {
-      filename = `${today}-${slug}.md`;
-    } else {
-      filename = `${slug}.md`;
-    }
+    // Parse frontmatter for tags
+    const { data: frontmatter } = matter(content);
+    const tags = frontmatter.tags || [];
 
-    const filePath = path.join(BRAIN_DIR, category, filename);
+    const { data, error } = await supabase
+      .from('documents')
+      .insert({
+        slug,
+        title,
+        category,
+        content,
+        tags,
+        user_id: '00000000-0000-0000-0000-000000000000', // TODO: Replace with actual user ID from auth
+      })
+      .select()
+      .single();
 
-    // Check if file exists (for non-journals, prevent overwrite)
-    if (category !== "journals" && fs.existsSync(filePath)) {
-      return NextResponse.json(
-        { error: "A document with this name already exists" },
-        { status: 409 }
-      );
-    }
+    if (error) throw error;
 
-    // For journals, append if exists
-    if (category === "journals" && fs.existsSync(filePath)) {
-      const existing = fs.readFileSync(filePath, "utf-8");
-      const timestamp = new Date().toLocaleTimeString("en-US", {
-        hour: "2-digit",
-        minute: "2-digit",
-      });
-      const appendContent = `\n\n---\n\n## ${title} (${timestamp})\n\n${content || "*No content*"}`;
-      fs.writeFileSync(filePath, existing + appendContent, "utf-8");
-    } else {
-      // Create frontmatter
-      const frontmatter = `---
-title: "${title.replace(/"/g, '\\"')}"
-date: ${today}
----
-
-`;
-      const fileContent = frontmatter + (content ? `# ${title}\n\n${content}` : `# ${title}\n\n*Start writing...*`);
-      fs.writeFileSync(filePath, fileContent, "utf-8");
-    }
-
-    // Return the created document
-    const newDoc = {
-      slug: `${category}/${filename.replace(/\.md$/, "")}`,
-      title,
-      category,
-      date: today,
-      content: content || "",
-      tags: extractTags(content || ""),
-    };
-
-    return NextResponse.json(newDoc, { status: 201 });
-  } catch (error) {
+    return NextResponse.json({ success: true, document: data });
+  } catch (error: any) {
     console.error("Error creating document:", error);
     return NextResponse.json(
-      { error: "Failed to create document" },
+      { error: error.message || "Failed to create document" },
       { status: 500 }
     );
   }
 }
 
+// PUT - Update existing document
 export async function PUT(request: NextRequest) {
   try {
     const { slug, content } = await request.json();
 
-    if (!slug || typeof slug !== "string") {
+    if (!slug || !content) {
       return NextResponse.json(
-        { error: "Slug is required" },
+        { error: "Slug and content are required" },
         { status: 400 }
       );
     }
 
-    // Parse slug into category and filename
-    const [category, ...rest] = slug.split("/");
-    const filename = rest.join("/") + ".md";
-    const filePath = path.join(BRAIN_DIR, category, filename);
+    // Parse frontmatter for tags
+    const { data: frontmatter } = matter(content);
+    const tags = frontmatter.tags || [];
 
-    if (!fs.existsSync(filePath)) {
-      return NextResponse.json(
-        { error: "Document not found" },
-        { status: 404 }
-      );
-    }
+    const { data, error} = await supabase
+      .from('documents')
+      .update({ content, tags })
+      .eq('slug', slug)
+      .select()
+      .single();
 
-    // Read existing file to preserve frontmatter
-    const existing = fs.readFileSync(filePath, "utf-8");
-    const { data: frontmatter } = matter(existing);
+    if (error) throw error;
 
-    // Rebuild file with preserved frontmatter
-    const newFrontmatter = Object.keys(frontmatter).length > 0
-      ? `---\n${Object.entries(frontmatter).map(([k, v]) => `${k}: ${typeof v === 'string' ? `"${v}"` : v}`).join('\n')}\n---\n\n`
-      : "";
-    
-    fs.writeFileSync(filePath, newFrontmatter + content, "utf-8");
-
-    return NextResponse.json({ success: true });
-  } catch (error) {
+    return NextResponse.json({ success: true, document: data });
+  } catch (error: any) {
     console.error("Error updating document:", error);
     return NextResponse.json(
-      { error: "Failed to update document" },
+      { error: error.message || "Failed to update document" },
       { status: 500 }
     );
   }
 }
 
+// DELETE - Delete document
 export async function DELETE(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
@@ -270,32 +127,18 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    // Parse slug into category and filename
-    const [category, ...rest] = slug.split("/");
-    const filename = rest.join("/") + ".md";
-    const filePath = path.join(BRAIN_DIR, category, filename);
+    const { error } = await supabase
+      .from('documents')
+      .delete()
+      .eq('slug', slug);
 
-    if (!fs.existsSync(filePath)) {
-      return NextResponse.json(
-        { error: "Document not found" },
-        { status: 404 }
-      );
-    }
+    if (error) throw error;
 
-    // Move to trash instead of deleting (safer)
-    const trashDir = path.join(BRAIN_DIR, ".trash");
-    if (!fs.existsSync(trashDir)) {
-      fs.mkdirSync(trashDir, { recursive: true });
-    }
-
-    const trashPath = path.join(trashDir, `${category}-${filename}`);
-    fs.renameSync(filePath, trashPath);
-
-    return NextResponse.json({ success: true, trashedTo: trashPath });
-  } catch (error) {
+    return NextResponse.json({ success: true });
+  } catch (error: any) {
     console.error("Error deleting document:", error);
     return NextResponse.json(
-      { error: "Failed to delete document" },
+      { error: error.message || "Failed to delete document" },
       { status: 500 }
     );
   }

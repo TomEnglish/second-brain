@@ -1,53 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import fs from "fs";
-import path from "path";
-import matter from "gray-matter";
-import { extractWikiLinks, resolveWikiLink } from "@/lib/wikilinks";
-
-const BRAIN_DIR = process.env.BRAIN_DIR || path.join(process.cwd(), "..", "brain");
-
-interface Document {
-  slug: string;
-  title: string;
-  content: string;
-}
-
-function extractTitle(content: string, filename: string): string {
-  const h1Match = content.match(/^#\s+(.+)$/m);
-  if (h1Match) return h1Match[1];
-  
-  return filename
-    .replace(/\.md$/, "")
-    .replace(/^\d{4}-\d{2}-\d{2}-?/, "")
-    .replace(/-/g, " ")
-    .replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
-function getAllDocuments(): Document[] {
-  const documents: Document[] = [];
-  const categories = ["journals", "concepts", "projects", "research"];
-
-  for (const category of categories) {
-    const categoryPath = path.join(BRAIN_DIR, category);
-    
-    if (!fs.existsSync(categoryPath)) continue;
-
-    const files = fs.readdirSync(categoryPath).filter((f) => f.endsWith(".md"));
-
-    for (const file of files) {
-      const filePath = path.join(categoryPath, file);
-      const fileContent = fs.readFileSync(filePath, "utf-8");
-      const { data: frontmatter, content } = matter(fileContent);
-      
-      const slug = `${category}/${file.replace(/\.md$/, "")}`;
-      const title = frontmatter.title || extractTitle(content, file);
-
-      documents.push({ slug, title, content });
-    }
-  }
-
-  return documents;
-}
+import { supabase } from "@/lib/supabase";
+import { extractWikiLinks } from "@/lib/wikilinks";
 
 export async function GET(request: NextRequest) {
   try {
@@ -61,68 +14,31 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const documents = getAllDocuments();
-    
-    // Find the target document
-    const targetDoc = documents.find(d => d.slug === targetSlug);
-    if (!targetDoc) {
-      return NextResponse.json({ backlinks: [], outlinks: [] });
-    }
+    // Get all documents
+    const { data: documents, error } = await supabase
+      .from('documents')
+      .select('*');
 
-    // Find backlinks (documents that link TO this one)
-    const backlinks: { slug: string; title: string; context: string }[] = [];
-    
-    for (const doc of documents) {
-      if (doc.slug === targetSlug) continue;
+    if (error) throw error;
 
+    // Find documents that link to the target
+    const backlinks = documents.filter((doc) => {
       const links = extractWikiLinks(doc.content);
-      
-      for (const link of links) {
-        // Check if this link points to our target
-        const resolved = resolveWikiLink(link.target, [{ slug: targetSlug, title: targetDoc.title }]);
-        
-        if (resolved) {
-          // Extract context around the link
-          const contextStart = Math.max(0, link.startIndex - 60);
-          const contextEnd = Math.min(doc.content.length, link.endIndex + 60);
-          let context = doc.content.slice(contextStart, contextEnd);
-          
-          if (contextStart > 0) context = "..." + context;
-          if (contextEnd < doc.content.length) context = context + "...";
-          context = context.replace(/\n/g, " ").replace(/\s+/g, " ").trim();
+      return links.includes(targetSlug);
+    });
 
-          backlinks.push({
-            slug: doc.slug,
-            title: doc.title,
-            context,
-          });
-          break; // Only count each document once
-        }
-      }
-    }
+    // Format backlinks
+    const formatted = backlinks.map((doc) => ({
+      slug: doc.slug,
+      title: doc.title,
+      category: doc.category,
+    }));
 
-    // Find outlinks (links FROM this document to others)
-    const outlinks: { slug: string; title: string; exists: boolean }[] = [];
-    const targetLinks = extractWikiLinks(targetDoc.content);
-    
-    const seenTargets = new Set<string>();
-    for (const link of targetLinks) {
-      if (seenTargets.has(link.target.toLowerCase())) continue;
-      seenTargets.add(link.target.toLowerCase());
-
-      const resolved = resolveWikiLink(link.target, documents);
-      outlinks.push({
-        slug: resolved?.slug || link.target,
-        title: resolved?.title || link.target,
-        exists: !!resolved,
-      });
-    }
-
-    return NextResponse.json({ backlinks, outlinks });
-  } catch (error) {
-    console.error("Error getting backlinks:", error);
+    return NextResponse.json(formatted);
+  } catch (error: any) {
+    console.error("Error fetching backlinks:", error);
     return NextResponse.json(
-      { error: "Failed to get backlinks" },
+      { error: error.message },
       { status: 500 }
     );
   }

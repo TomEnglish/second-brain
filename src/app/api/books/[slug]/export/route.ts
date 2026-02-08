@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import fs from "fs/promises";
-import path from "path";
+import { supabase } from "@/lib/supabase";
 import { exec } from "child_process";
 import { promisify } from "util";
+import fs from "fs/promises";
+import path from "path";
+import os from "os";
 
 const execAsync = promisify(exec);
 
@@ -20,68 +22,83 @@ export async function POST(
       );
     }
 
-    const brainDir = path.join(process.cwd(), "..", "brain", "books", params.slug);
-    const chaptersDir = path.join(brainDir, "chapters");
-    const exportsDir = path.join(brainDir, "exports");
-    
-    // Ensure exports directory exists
-    await fs.mkdir(exportsDir, { recursive: true });
+    // Get book
+    const { data: book, error: bookError } = await supabase
+      .from('books')
+      .select('*')
+      .eq('slug', params.slug)
+      .single();
 
-    // Combine all chapters
-    const files = await fs.readdir(chaptersDir);
-    const chapterFiles = files.filter(f => f.endsWith(".md")).sort();
+    if (bookError) throw bookError;
+
+    // Get chapters
+    const { data: chapters, error: chaptersError } = await supabase
+      .from('chapters')
+      .select('*')
+      .eq('book_id', book.id)
+      .order('order_num');
+
+    if (chaptersError) throw chaptersError;
     
-    if (chapterFiles.length === 0) {
+    if (chapters.length === 0) {
       return NextResponse.json(
         { error: "No chapters found" },
         { status: 400 }
       );
     }
 
+    // Combine all chapters
     let manuscript = "";
-    for (const file of chapterFiles) {
-      const content = await fs.readFile(path.join(chaptersDir, file), "utf-8");
-      manuscript += content + "\n\n";
+    for (const chapter of chapters) {
+      manuscript += (chapter.content || "") + "\n\n";
     }
 
-    const manuscriptPath = path.join(exportsDir, "manuscript.md");
-    await fs.writeFile(manuscriptPath, manuscript);
+    // Create temp directory
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'book-export-'));
+    const manuscriptPath = path.join(tmpDir, "manuscript.md");
+    const outputPath = path.join(tmpDir, `${params.slug}.${format}`);
 
-    // Generate output file
-    const outputPath = path.join(exportsDir, `${params.slug}.${format}`);
-    
-    if (format === "docx") {
-      // Add page breaks for DOCX
-      const pagebreak = '```{=openxml}\n<w:p><w:r><w:br w:type="page"/></w:r></w:p>\n```';
+    try {
+      await fs.writeFile(manuscriptPath, manuscript);
+
+      if (format === "docx") {
+        // Add page breaks for DOCX
+        const pagebreak = '```{=openxml}\n<w:p><w:r><w:br w:type="page"/></w:r></w:p>\n```';
+        const manuscriptWithBreaks = manuscript.replace(
+          /^# /gm,
+          `${pagebreak}\n\n# `
+        );
+        await fs.writeFile(manuscriptPath, manuscriptWithBreaks);
+        
+        await execAsync(
+          `pandoc "${manuscriptPath}" --toc --toc-depth=1 -o "${outputPath}" --metadata title="${book.title}"`
+        );
+      } else {
+        // EPUB
+        await execAsync(
+          `pandoc "${manuscriptPath}" --toc --toc-depth=1 --split-level=1 -o "${outputPath}" --metadata title="${book.title}"`
+        );
+      }
+
+      // Read the generated file and return it
+      const fileBuffer = await fs.readFile(outputPath);
       
-      const manuscriptWithBreaks = manuscript.replace(
-        /^# /gm,
-        `${pagebreak}\n\n# `
-      );
+      // Clean up temp files
+      await fs.rm(tmpDir, { recursive: true });
       
-      await fs.writeFile(manuscriptPath, manuscriptWithBreaks);
-      
-      await execAsync(
-        `pandoc "${manuscriptPath}" --toc --toc-depth=1 -o "${outputPath}" --metadata title="${params.slug}"`
-      );
-    } else {
-      // EPUB
-      await execAsync(
-        `pandoc "${manuscriptPath}" --toc --toc-depth=1 --split-level=1 -o "${outputPath}" --metadata title="${params.slug}"`
-      );
+      return new NextResponse(fileBuffer, {
+        headers: {
+          "Content-Type": format === "docx" 
+            ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            : "application/epub+zip",
+          "Content-Disposition": `attachment; filename="${params.slug}.${format}"`,
+        },
+      });
+    } catch (execError) {
+      // Clean up on error
+      await fs.rm(tmpDir, { recursive: true }).catch(() => {});
+      throw execError;
     }
-
-    // Read the generated file and return it
-    const fileBuffer = await fs.readFile(outputPath);
-    
-    return new NextResponse(fileBuffer, {
-      headers: {
-        "Content-Type": format === "docx" 
-          ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-          : "application/epub+zip",
-        "Content-Disposition": `attachment; filename="${params.slug}.${format}"`,
-      },
-    });
   } catch (error: any) {
     console.error("Export error:", error);
     return NextResponse.json(
