@@ -20,13 +20,16 @@ export async function GET() {
     
     documents.forEach((doc) => {
       const wikiLinks = extractWikiLinks(doc.content);
-      wikiLinks.forEach((targetSlug) => {
+      wikiLinks.forEach((link) => {
         // Only add link if target exists
-        if (documents.some((d) => d.slug === targetSlug)) {
-          links.push({
-            source: doc.slug,
-            target: targetSlug,
-          });
+        if (documents.some((d) => d.slug === link.target || d.slug.endsWith(`/${link.target}`))) {
+          const targetDoc = documents.find((d) => d.slug === link.target || d.slug.endsWith(`/${link.target}`));
+          if (targetDoc) {
+            links.push({
+              source: doc.slug,
+              target: targetDoc.slug,
+            });
+          }
         }
       });
     });

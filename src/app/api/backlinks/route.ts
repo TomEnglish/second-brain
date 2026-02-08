@@ -24,7 +24,7 @@ export async function GET(request: NextRequest) {
     // Find documents that link to the target
     const backlinks = documents.filter((doc) => {
       const links = extractWikiLinks(doc.content);
-      return links.includes(targetSlug);
+      return links.some(link => link.target === targetSlug || `${doc.category}/${link.target}` === targetSlug);
     });
 
     // Format backlinks
